@@ -1,8 +1,9 @@
-use std::io::{Error, ErrorKind};
 use std::sync::mpsc::Receiver;
 
 mod tcp;
+mod dto;
 mod actions;
+mod error;
 
 fn main() {
     tcp::start_server()
@@ -13,7 +14,7 @@ fn main() {
 fn handle_actions(receiver : Receiver<actions::Action>) {
     loop {
         receiver.recv()
-            .or(Result::Err(Error::new(ErrorKind::Other, "Failed to receive action")))
+            .or(error::Error::ActionReceiveFailed.as_result::<actions::Action>())
             .and_then(actions::run)
             .unwrap_or_else(|e| println!("{}", e));
     }

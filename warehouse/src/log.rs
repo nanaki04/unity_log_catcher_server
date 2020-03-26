@@ -38,7 +38,7 @@ impl Log {
         })?.collect()
     }
 
-    pub fn persist(&self, conn: Connection) -> Result<Log> {
+    pub fn persist(&self, conn: &Connection) -> Result<Log> {
         conn.execute(
             "INSERT INTO logs (log_type, message, stack_trace) values (?1, ?2, ?3)",
             &[&self.log_type, &self.message, &self.stack_trace]
