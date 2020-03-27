@@ -50,6 +50,12 @@ impl ExternalAction {
             payload: Payload::External(self.payload),
         }
     }
+
+    #[allow(dead_code)] // used for debugging
+    pub fn serialize(self) -> Result<String, Error> {
+        serde_json::to_string(&self)
+            .or(Error::DeserializationFailed.as_result::<String>())
+    }
 }
 
 pub struct Action {
@@ -73,6 +79,19 @@ pub fn run(action: Action) -> Result<(), Error> {
             Ok(())
         },
         Command::AddClient => {
+            // DEBUG
+//            let action = ExternalAction {
+//                command: Command::StoreLog,
+//                payload: ExternalPayload::Log(LogDto {
+//                    log_type: String::from("error"),
+//                    message: String::from("Some error"),
+//                    stack_trace: String::from("stack trace"),
+//                }),
+//            };
+//
+//            let json = action.serialize()?;
+//            println!("{}", json);
+
             println!("{}", "client connected");
             Ok(())
         },

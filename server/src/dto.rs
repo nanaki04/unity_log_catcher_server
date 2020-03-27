@@ -5,9 +5,9 @@ use warehouse::log::Log;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LogDto {
-    log_type: String,
-    message: String,
-    stack_trace: String,
+    pub log_type: String,
+    pub message: String,
+    pub stack_trace: String,
 }
 
 impl LogDto {

@@ -10,6 +10,8 @@ pub enum Error {
     CorruptTcpStreamData,
     EmptyTcpStreamData,
     DeserializationFailed,
+    #[allow(dead_code)] // used for debugging
+    SerializationFailed,
     FailedToUnwrapLogPayload,
     FailedDbConnection,
     FailedToWriteToDb,
