@@ -12,7 +12,6 @@ pub enum Error {
     DeserializationFailed,
     #[allow(dead_code)] // used for debugging
     SerializationFailed,
-    FailedToUnwrapLogPayload,
     FailedDbConnection,
     FailedToWriteToDb,
     FailedToCloseDbConnection,

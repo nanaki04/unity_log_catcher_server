@@ -3,7 +3,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::net::{TcpListener, TcpStream, SocketAddr};
 use std::io::Read;
 use std::str::from_utf8;
-use crate::actions::{Action, Command, Payload, InternalPayload};
+use crate::actions::{Action, InternalAction};
 use crate::error::Error;
 
 pub fn start_server() -> Result<Receiver<Action>, Error> {
@@ -25,11 +25,7 @@ fn accept(listener : &TcpListener, tx: Sender<Action>) -> Result<(), Error> {
     let (socket, address) = listener.accept()
         .or(Error::FailedToAcceptOnTcpListener.as_result::<(TcpStream, SocketAddr)>())?;
 
-    let action = Action {
-        command: Command::AddClient,
-        payload: Payload::Internal(InternalPayload::Client(address)),
-    };
-
+    let action = Action::Internal(InternalAction::AddClient(address));
     tx.send(action)
         .or(Error::ActionDispatchFailed.as_result::<()>())?;
 
