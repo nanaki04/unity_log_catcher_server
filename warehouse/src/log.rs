@@ -21,6 +21,14 @@ impl LogType {
             _ => Error::failed_to_convert_log_type::<LogType>(),
         }
     }
+
+    pub fn to_string(self) -> String {
+        match self {
+            LogType::Log => "log".to_string(),
+            LogType::Warning => "warning".to_string(),
+            LogType::Error => "error".to_string(),
+        }
+    }
 }
 
 impl ToSql for LogType {
@@ -61,7 +69,7 @@ impl Log {
         Ok(conn)
     }
 
-    pub fn fetch(conn: Connection) -> Result<Vec<Log>, Error> {
+    pub fn fetch(conn: &Connection) -> Result<Vec<Log>, Error> {
         conn.prepare("SELECT * FROM logs")
             .or_else(Error::rusqlite_error)?
             .query_map(params![], |row| {

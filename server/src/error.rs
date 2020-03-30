@@ -17,6 +17,7 @@ pub enum Error {
     SerializationFailed,
     FailedDbConnection,
     FailedToWriteToDb,
+    FailedToReadFromDb,
     FailedToCloseDbConnection,
     InvalidLogType,
 }

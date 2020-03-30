@@ -32,7 +32,7 @@ impl ExternalAction {
     #[allow(dead_code)] // used for debugging
     pub fn serialize(self) -> Result<String, Error> {
         serde_json::to_string(&self)
-            .or(Error::DeserializationFailed.as_result::<String>())
+            .or(Error::SerializationFailed.as_result::<String>())
     }
 }
 
@@ -95,7 +95,19 @@ pub fn run(action: Action) -> Result<(), Error> {
                 .or(Err(Error::FailedToCloseDbConnection))
         },
         Action::External((ExternalAction::ReadLogs(_max), sender)) => {
-            sender.send(String::from("response"))
+            let conn = Log::connection()
+                .or(Err(Error::FailedDbConnection))?;
+
+            let logs : Vec<LogDto> = Log::fetch(&conn)
+                .or(Err(Error::FailedToReadFromDb))?
+                .into_iter()
+                .map(LogDto::from_log)
+                .collect();
+
+            let response = serde_json::to_string(&logs)
+                .or(Err(Error::SerializationFailed))?;
+
+            sender.send(response)
                 .or(Err(Error::FailedToSendResponse))
         }
     }
