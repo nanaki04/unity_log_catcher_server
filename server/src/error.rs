@@ -4,9 +4,12 @@ use std::fmt;
 pub enum Error {
     ActionDispatchFailed,
     ActionReceiveFailed,
+    ReceiveActionResponseFailed,
     FailedToOpenTcpListener,
     FailedToAcceptOnTcpListener,
     FailedToReadTcpStream,
+    FailedToCreateTcpStreamWriter,
+    FailedToSendResponse,
     CorruptTcpStreamData,
     EmptyTcpStreamData,
     DeserializationFailed,
@@ -15,6 +18,7 @@ pub enum Error {
     FailedDbConnection,
     FailedToWriteToDb,
     FailedToCloseDbConnection,
+    InvalidLogType,
 }
 
 impl Error {

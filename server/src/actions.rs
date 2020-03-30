@@ -1,6 +1,7 @@
 extern crate warehouse;
 
 use serde::{Serialize, Deserialize};
+use std::sync::mpsc::Sender;
 use std::net::SocketAddr;
 use crate::error::Error;
 use crate::dto::LogDto;
@@ -11,6 +12,7 @@ pub enum ExternalAction {
     Ping,
     StoreLog(LogDto),
     StoreLogs(Vec<LogDto>),
+    ReadLogs(usize),
 }
 
 pub enum InternalAction {
@@ -19,12 +21,12 @@ pub enum InternalAction {
 
 pub enum Action {
     Internal(InternalAction),
-    External(ExternalAction),
+    External((ExternalAction, Sender<String>)),
 }
 
 impl ExternalAction {
-    pub fn to_action(self) -> Action {
-        Action::External(self)
+    pub fn to_action(self, sender: Sender<String>) -> Action {
+        Action::External((self, sender))
     }
 
     #[allow(dead_code)] // used for debugging
@@ -35,17 +37,17 @@ impl ExternalAction {
 }
 
 impl Action {
-    pub fn deserialize(source : &str) -> Result<Action, Error> {
+    pub fn deserialize(source: &str, sender: Sender<String>) -> Result<Action, Error> {
         println!("{}", source);
         let external_action : ExternalAction = serde_json::from_str(source)
             .or(Error::DeserializationFailed.as_result::<ExternalAction>())?;
-        Ok(external_action.to_action())
+        Ok(external_action.to_action(sender))
     }
 }
 
 pub fn run(action: Action) -> Result<(), Error> {
     match action {
-        Action::External(ExternalAction::Ping) => {
+        Action::External((ExternalAction::Ping, _)) => {
             println!("{}", "received ping message");
             Ok(())
         },
@@ -63,27 +65,38 @@ pub fn run(action: Action) -> Result<(), Error> {
             println!("{}", "client connected");
             Ok(())
         },
-        Action::External(ExternalAction::StoreLog(log)) => {
+        Action::External((ExternalAction::StoreLog(log), _)) => {
             let conn = Log::connection()
                 .or(Err(Error::FailedDbConnection))?;
 
-            log.to_log().persist(&conn)
+            log.to_log()?
+                .persist(&conn)
                 .or(Err(Error::FailedToWriteToDb))?;
 
             conn.close()
                 .or(Err(Error::FailedToCloseDbConnection))
         },
-        Action::External(ExternalAction::StoreLogs(logs)) => {
+        Action::External((ExternalAction::StoreLogs(logs), _)) => {
             let conn = Log::connection()
                 .or(Err(Error::FailedDbConnection))?;
 
             logs
                 .into_iter()
-                .fold(Ok(()), |acc, log| acc.and_then(|_| log.to_log().persist(&conn)).map(|_| ()))
+                .map(|log| log.to_log()
+                     .or(Err(Error::FailedToWriteToDb))?
+                     .persist(&conn)
+                     .or(Err(Error::FailedToWriteToDb))
+                     .map(|_| ())
+                 )
+                .collect::<Result<Vec<()>, Error>>()
                 .or(Err(Error::FailedToWriteToDb))?;
 
             conn.close()
                 .or(Err(Error::FailedToCloseDbConnection))
+        },
+        Action::External((ExternalAction::ReadLogs(_max), sender)) => {
+            sender.send(String::from("response"))
+                .or(Err(Error::FailedToSendResponse))
         }
     }
 }

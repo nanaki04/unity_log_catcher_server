@@ -1,7 +1,7 @@
 use std::thread;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::net::{TcpListener, TcpStream, SocketAddr};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::str::from_utf8;
 use crate::actions::{Action, InternalAction};
 use crate::error::Error;
@@ -33,6 +33,10 @@ fn accept(listener : &TcpListener, tx: Sender<Action>) -> Result<(), Error> {
 }
 
 fn receive(mut socket : TcpStream, tx : Sender<Action>) -> Result<(), Error> {
+    let (tcp_out_tx, tcp_out_tr) = channel();
+    let mut write_stream = socket.try_clone()
+        .or(Error::FailedToCreateTcpStreamWriter.as_result::<TcpStream>())?;
+
     thread::spawn(move || {
         let mut data = String::new();
 
@@ -53,7 +57,7 @@ fn receive(mut socket : TcpStream, tx : Sender<Action>) -> Result<(), Error> {
                     }
                 })
                 .and_then(|(rest, messages)| {
-                    let actions = parse_messages(messages)?;
+                    let actions = parse_messages(messages, &tcp_out_tx)?;
                     actions
                         .into_iter()
                         .fold(Ok(()), |acc, action| acc.and_then(|_| tx.send(action)))
@@ -63,6 +67,20 @@ fn receive(mut socket : TcpStream, tx : Sender<Action>) -> Result<(), Error> {
                 .unwrap_or_else(|e| {
                     println!("{}", e);
                     String::new()
+                });
+        }
+    });
+
+    thread::spawn(move || {
+        loop {
+            tcp_out_tr.recv()
+                .or(Error::ReceiveActionResponseFailed.as_result())
+                .and_then(|output| write_stream.write(format!("{}\n", output.as_str()).as_bytes())
+                    .or(Error::FailedToSendResponse.as_result())
+                    .map(|_| ())
+                )
+                .unwrap_or_else(|e| {
+                    println!("{}", e);
                 });
         }
     });
@@ -85,13 +103,13 @@ fn take_messages(data : String) -> Result<(String, Vec<String>), Error> {
         .ok_or(Error::EmptyTcpStreamData)
 }
 
-fn parse_messages(messages : Vec<String>) -> Result<Vec<Action>, Error> {
+fn parse_messages(messages : Vec<String>, sender : &Sender<String>) -> Result<Vec<Action>, Error> {
     println!("{}", "parse messages");
     messages
         .iter()
         .fold(Ok(Vec::<Action>::new()), |acc, message| {
             acc.and_then(|mut actions| {
-                let action = Action::deserialize(message.as_str())?;
+                let action = Action::deserialize(message.as_str(), sender.clone())?;
                 actions.push(action);
                 Ok(actions)
             })

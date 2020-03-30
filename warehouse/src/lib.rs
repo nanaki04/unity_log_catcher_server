@@ -1,4 +1,5 @@
 pub mod log;
+mod error;
 
 pub fn main() -> Result<()> {
     Ok(())
