@@ -9,10 +9,11 @@ use warehouse::log::Log;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ExternalAction {
-    Ping,
+    Ping(()),
     StoreLog(LogDto),
     StoreLogs(Vec<LogDto>),
-    ReadLogs(usize),
+    ReadLogs(i64),
+    ClearLogs(()),
 }
 
 pub enum InternalAction {
@@ -31,24 +32,26 @@ impl ExternalAction {
 
     #[allow(dead_code)] // used for debugging
     pub fn serialize(self) -> Result<String, Error> {
-        serde_json::to_string(&self)
-            .or(Error::SerializationFailed.as_result::<String>())
+        let serialized = serde_json::to_string(&self)?;
+        Ok(serialized)
     }
 }
 
 impl Action {
     pub fn deserialize(source: &str, sender: Sender<String>) -> Result<Action, Error> {
-        println!("{}", source);
-        let external_action : ExternalAction = serde_json::from_str(source)
-            .or(Error::DeserializationFailed.as_result::<ExternalAction>())?;
+        let external_action : ExternalAction = serde_json::from_str(source)?;
         Ok(external_action.to_action(sender))
     }
 }
 
 pub fn run(action: Action) -> Result<(), Error> {
     match action {
-        Action::External((ExternalAction::Ping, _)) => {
+        Action::External((ExternalAction::Ping(()), sender)) => {
             println!("{}", "received ping message");
+
+            sender.send("pong!".to_string())
+                .or(Err(Error::FailedToSendResponse))?;
+
             Ok(())
         },
         Action::Internal(InternalAction::AddClient(_)) => {
@@ -58,7 +61,7 @@ pub fn run(action: Action) -> Result<(), Error> {
 //                message: String::from("Some error"),
 //                stack_trace: String::from("stack trace"),
 //            });
-            let action = ExternalAction::Ping;
+            let action = ExternalAction::ClearLogs(());
             let json = action.serialize()?;
             println!("{}", json);
 
@@ -66,49 +69,57 @@ pub fn run(action: Action) -> Result<(), Error> {
             Ok(())
         },
         Action::External((ExternalAction::StoreLog(log), _)) => {
-            let conn = Log::connection()
-                .or(Err(Error::FailedDbConnection))?;
+            let conn = Log::connection()?;
 
             log.to_log()?
-                .persist(&conn)
-                .or(Err(Error::FailedToWriteToDb))?;
+                .persist(&conn)?;
 
             conn.close()
-                .or(Err(Error::FailedToCloseDbConnection))
+                .or(Err(Error::FailedToCloseDbConnection))?;
+
+            Ok(())
         },
         Action::External((ExternalAction::StoreLogs(logs), _)) => {
-            let conn = Log::connection()
-                .or(Err(Error::FailedDbConnection))?;
+            let conn = Log::connection()?;
 
             logs
                 .into_iter()
-                .map(|log| log.to_log()
-                     .or(Err(Error::FailedToWriteToDb))?
-                     .persist(&conn)
-                     .or(Err(Error::FailedToWriteToDb))
-                     .map(|_| ())
-                 )
-                .collect::<Result<Vec<()>, Error>>()
-                .or(Err(Error::FailedToWriteToDb))?;
+                .map(|log| {
+                    let log = log.to_log()?;
+                    log.persist(&conn)?;
+                    Ok(())
+                })
+                .collect::<Result<Vec<()>, Error>>()?;
 
             conn.close()
-                .or(Err(Error::FailedToCloseDbConnection))
-        },
-        Action::External((ExternalAction::ReadLogs(_max), sender)) => {
-            let conn = Log::connection()
-                .or(Err(Error::FailedDbConnection))?;
+                .or(Err(Error::FailedToCloseDbConnection))?;
 
-            let logs : Vec<LogDto> = Log::fetch(&conn)
-                .or(Err(Error::FailedToReadFromDb))?
+            Ok(())
+        },
+        Action::External((ExternalAction::ReadLogs(max), sender)) => {
+            let conn = Log::connection()?;
+
+            let logs : Vec<LogDto> = Log::fetch_with_limit(&conn, max)?
                 .into_iter()
                 .map(LogDto::from_log)
                 .collect();
 
-            let response = serde_json::to_string(&logs)
-                .or(Err(Error::SerializationFailed))?;
+            let response = serde_json::to_string(&logs)?;
 
             sender.send(response)
-                .or(Err(Error::FailedToSendResponse))
-        }
+                .or(Err(Error::FailedToSendResponse))?;
+
+            Ok(())
+        },
+        Action::External((ExternalAction::ClearLogs(()), sender)) => {
+            let conn = Log::connection()?;
+
+            Log::truncate(&conn)?;
+
+            sender.send("ok".to_string())
+                .or(Err(Error::FailedToSendResponse))?;
+
+            Ok(())
+        },
     }
 }

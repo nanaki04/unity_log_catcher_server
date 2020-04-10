@@ -108,6 +108,7 @@ fn parse_messages(messages : Vec<String>, sender : &Sender<String>) -> Result<Ve
     messages
         .iter()
         .fold(Ok(Vec::<Action>::new()), |acc, message| {
+            println!("{}", message);
             acc.and_then(|mut actions| {
                 let action = Action::deserialize(message.as_str(), sender.clone())?;
                 actions.push(action);
