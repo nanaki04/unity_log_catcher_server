@@ -12,9 +12,10 @@ pub enum ExternalAction {
     Ping,
     StoreLog(LogDto),
     StoreLogs(Vec<LogDto>),
-    ReadLogs(usize),
+    ReadLogs(i64),
     RemoveClient,
     Recompile,
+    ClearLogs,
 }
 
 pub enum InternalAction {
@@ -33,8 +34,8 @@ impl ExternalAction {
 
     #[allow(dead_code)] // used for debugging
     pub fn serialize(self) -> Result<String, Error> {
-        serde_json::to_string(&self)
-            .or(Error::SerializationFailed.as_result::<String>())
+        let serialized = serde_json::to_string(&self)?;
+        Ok(serialized)
     }
 }
 
@@ -52,6 +53,10 @@ impl Action {
 
         if source == "Recompile" {
             return Ok(ExternalAction::Recompile.to_action(client_id, sender));
+        }
+
+        if source == "ClearLogs" {
+            return Ok(ExternalAction::ClearLogs.to_action(client_id, sender));
         }
 
         let external_action : ExternalAction = serde_json::from_str(source)
@@ -95,8 +100,7 @@ pub fn run(action: Action, mut state : State) -> Result<State, Error> {
                 .or(Err(Error::FailedDbConnection))?;
 
             log.to_log()?
-                .persist(&conn)
-                .or(Err(Error::FailedToWriteToDb))?;
+                .persist(&conn)?;
 
             conn.close()
                 .or(Err(Error::FailedToCloseDbConnection))
@@ -108,35 +112,40 @@ pub fn run(action: Action, mut state : State) -> Result<State, Error> {
 
             logs
                 .into_iter()
-                .map(|log| log.to_log()
-                     .or(Err(Error::FailedToWriteToDb))?
-                     .persist(&conn)
-                     .or(Err(Error::FailedToWriteToDb))
-                     .map(|_| ())
-                 )
-                .collect::<Result<Vec<()>, Error>>()
-                .or(Err(Error::FailedToWriteToDb))?;
+                .map(|log| {
+                    let log = log.to_log()?;
+                    log.persist(&conn)?;
+                    Ok(())
+                })
+                .collect::<Result<Vec<()>, Error>>()?;
 
             conn.close()
                 .or(Err(Error::FailedToCloseDbConnection))
                 .map(|_| state)
         },
-        Action::External((ExternalAction::ReadLogs(_max), _, sender)) => {
+        Action::External((ExternalAction::ReadLogs(max), _, sender)) => {
             let conn = Log::connection()
                 .or(Err(Error::FailedDbConnection))?;
 
-            let logs : Vec<LogDto> = Log::fetch(&conn)
-                .or(Err(Error::FailedToReadFromDb))?
+            let logs : Vec<LogDto> = Log::fetch_with_limit(&conn, max)?
                 .into_iter()
                 .map(LogDto::from_log)
                 .collect();
 
-            let response = serde_json::to_string(&logs)
-                .or(Err(Error::SerializationFailed))?;
+            let response = serde_json::to_string(&logs)?;
 
             sender.send(response)
                 .or(Err(Error::FailedToSendResponse))
                 .map(|_| state)
         }
+        Action::External((ExternalAction::ClearLogs, _, sender)) => {
+            let conn = Log::connection()?;
+
+            Log::truncate(&conn)?;
+
+            sender.send("ok".to_string())
+                .or(Err(Error::FailedToSendResponse))
+                .map(|_| state)
+        },
     }
 }

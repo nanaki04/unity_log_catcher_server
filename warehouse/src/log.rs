@@ -1,6 +1,6 @@
 extern crate rusqlite;
 
-use rusqlite::{params, Connection, ToSql};
+use rusqlite::{params, Connection, ToSql, Row};
 use rusqlite::types::{ToSqlOutput, Value};
 use std::fmt;
 use crate::error::Error;
@@ -22,7 +22,7 @@ impl LogType {
         }
     }
 
-    pub fn to_string(self) -> String {
+    pub fn as_string(self) -> String {
         match self {
             LogType::Log => "log".to_string(),
             LogType::Warning => "warning".to_string(),
@@ -33,8 +33,7 @@ impl LogType {
 
 impl ToSql for LogType {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput> {
-        let log_type = format!("{}", self);
-        Ok(ToSqlOutput::Owned(Value::Text(log_type)))
+        Ok(ToSqlOutput::Owned(Value::Text(self.as_string())))
     }
 }
 
@@ -53,8 +52,7 @@ pub struct Log {
 
 impl Log {
     pub fn connection() -> Result<Connection, Error> {
-        let conn = Connection::open("../logs.db")
-            .or_else(Error::rusqlite_error)?;
+        let conn = Connection::open("../logs.db")?;
 
         conn.execute(
             "create table if not exists logs (
@@ -64,43 +62,54 @@ impl Log {
                 stack_trace text not null
             )",
             params![]
-        ).or_else(Error::rusqlite_error)?;
+        )?;
 
         Ok(conn)
     }
 
     pub fn fetch(conn: &Connection) -> Result<Vec<Log>, Error> {
-        conn.prepare("SELECT * FROM logs")
-            .or_else(Error::rusqlite_error)?
-            .query_map(params![], |row| {
-                let id = row.get(0)?;
-                let log_type = row.get(1)?;
-                let message = row.get(2)?;
-                let stack_trace = row.get(3)?;
-
-                Ok((id, log_type, message, stack_trace))
-            })
-            .or_else(Error::rusqlite_error)?
-            .map(|result| {
-                let (id, log_type, message, stack_trace) = result
-                    .or_else(Error::rusqlite_error)?;
-                let converted_log_type = LogType::from_string(log_type)?;
-
-                Ok(Log {
-                    id: id,
-                    log_type: converted_log_type,
-                    message: message,
-                    stack_trace: stack_trace,
-                })
-            })
+        conn.prepare("SELECT * FROM logs")?
+            .query_map(params![], Log::unwrap_row)?
+            .map(|values| values.unwrap())
+            .map(Log::build_log)
             .collect()
+    }
+
+    pub fn fetch_with_limit(conn: &Connection, limit: i64) -> Result<Vec<Log>, Error> {
+        if limit > 0 {
+            conn.prepare("SELECT * FROM logs LIMIT (?)")?
+                .query_map(params![limit], Log::unwrap_row)?
+                .map(|values| values.unwrap())
+                .map(Log::build_log)
+                .collect()
+        } else {
+            Log::fetch(&conn)
+        }
+    }
+
+    fn unwrap_row(row: &Row) -> Result<(i64, String, String, String), rusqlite::Error> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+        ))
+    }
+
+    fn build_log((id, log_type, message, stack_trace): (i64, String, String, String)) -> Result<Log, Error> {
+        Ok(Log {
+            id: id,
+            log_type: LogType::from_string(log_type)?,
+            message: message,
+            stack_trace: stack_trace,
+        })
     }
 
     pub fn persist(&self, conn: &Connection) -> Result<Log, Error> {
         conn.execute(
             "INSERT INTO logs (log_type, message, stack_trace) values (?1, ?2, ?3)",
             params![self.log_type, self.message, self.stack_trace]
-        ).or_else(Error::rusqlite_error)?;
+        )?;
 
         Ok(Log {
             id: conn.last_insert_rowid(),
@@ -109,6 +118,12 @@ impl Log {
             stack_trace: self.stack_trace.clone(),
         })
     }
+
+    pub fn truncate(conn: &Connection) -> Result<(), Error> {
+        conn.execute("DELETE FROM logs", params![])?;
+        Ok(())
+    }
+
 }
 
 impl fmt::Display for Log {

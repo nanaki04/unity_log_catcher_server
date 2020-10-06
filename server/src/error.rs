@@ -2,6 +2,8 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum Error {
+    DbError(warehouse::error::Error),
+    SerializationError(serde_json::error::Error),
     ActionDispatchFailed,
     ActionReceiveFailed,
     ReceiveActionResponseFailed,
@@ -13,12 +15,10 @@ pub enum Error {
     ClientDisconnected,
     CorruptTcpStreamData,
     EmptyTcpStreamData,
-    DeserializationFailed,
     #[allow(dead_code)] // used for debugging
     SerializationFailed,
+    DeserializationFailed,
     FailedDbConnection,
-    FailedToWriteToDb,
-    FailedToReadFromDb,
     FailedToCloseDbConnection,
     InvalidLogType,
 }
@@ -32,5 +32,17 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self)
+    }
+}
+
+impl From<warehouse::error::Error> for Error {
+    fn from(error: warehouse::error::Error) -> Self {
+        Error::DbError(error)
+    }
+}
+
+impl From<serde_json::error::Error> for Error {
+    fn from(error: serde_json::error::Error) -> Self {
+        Error::SerializationError(error)
     }
 }
