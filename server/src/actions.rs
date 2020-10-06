@@ -2,9 +2,9 @@ extern crate warehouse;
 
 use serde::{Serialize, Deserialize};
 use std::sync::mpsc::Sender;
-use std::net::SocketAddr;
 use crate::error::Error;
 use crate::dto::LogDto;
+use crate::state::State;
 use warehouse::log::Log;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -13,20 +13,22 @@ pub enum ExternalAction {
     StoreLog(LogDto),
     StoreLogs(Vec<LogDto>),
     ReadLogs(usize),
+    RemoveClient,
+    Recompile,
 }
 
 pub enum InternalAction {
-    AddClient(SocketAddr),
+    AddClient((usize, Sender<String>)),
 }
 
 pub enum Action {
     Internal(InternalAction),
-    External((ExternalAction, Sender<String>)),
+    External((ExternalAction, usize, Sender<String>)),
 }
 
 impl ExternalAction {
-    pub fn to_action(self, sender: Sender<String>) -> Action {
-        Action::External((self, sender))
+    pub fn to_action(self, client_id: usize, sender: Sender<String>) -> Action {
+        Action::External((self, client_id, sender))
     }
 
     #[allow(dead_code)] // used for debugging
@@ -37,35 +39,58 @@ impl ExternalAction {
 }
 
 impl Action {
-    pub fn deserialize(source: &str, sender: Sender<String>) -> Result<Action, Error> {
+    pub fn deserialize(source: &str, client_id : usize, sender: Sender<String>) -> Result<Action, Error> {
         println!("{}", source);
+
+        if source == "Ping" {
+            return Ok(ExternalAction::Ping.to_action(client_id, sender));
+        }
+
+        if source == "RemoveClient" {
+            return Ok(ExternalAction::RemoveClient.to_action(client_id, sender));
+        }
+
+        if source == "Recompile" {
+            return Ok(ExternalAction::Recompile.to_action(client_id, sender));
+        }
+
         let external_action : ExternalAction = serde_json::from_str(source)
             .or(Error::DeserializationFailed.as_result::<ExternalAction>())?;
-        Ok(external_action.to_action(sender))
+        Ok(external_action.to_action(client_id, sender))
     }
 }
 
-pub fn run(action: Action) -> Result<(), Error> {
+pub fn run(action: Action, mut state : State) -> Result<State, Error> {
     match action {
-        Action::External((ExternalAction::Ping, _)) => {
+        Action::External((ExternalAction::Ping, _, sender)) => {
             println!("{}", "received ping message");
-            Ok(())
-        },
-        Action::Internal(InternalAction::AddClient(_)) => {
-            // DEBUG
-//            let action = ExternalAction::StoreLog(LogDto {
-//                log_type: String::from("error"),
-//                message: String::from("Some error"),
-//                stack_trace: String::from("stack trace"),
-//            });
-            let action = ExternalAction::Ping;
-            let json = action.serialize()?;
-            println!("{}", json);
 
-            println!("{}", "client connected");
-            Ok(())
+            sender.send("Pong".to_string())
+                .or(Err(Error::FailedToSendResponse))
+                .map(|_| state)
         },
-        Action::External((ExternalAction::StoreLog(log), _)) => {
+        Action::Internal(InternalAction::AddClient((id, sender))) => {
+            println!("{}", "client connected");
+            state.clients.insert(id, sender);
+            Ok(state)
+        },
+        Action::External((ExternalAction::RemoveClient, id, sender)) => {
+            println!("{}", "client disconnected");
+            state.clients.remove(&id);
+            sender.send("Close".to_string())
+                .or(Err(Error::FailedToSendResponse))
+                .map(|_| state)
+        },
+        Action::External((ExternalAction::Recompile, _, _)) => {
+            for (_, client) in state.clients.iter() {
+                let result = client.send("Recompile".to_string());
+                if result.is_err() {
+                    println!("{}", "Failed to send command {Recompile} to a client");
+                }
+            }
+            Ok(state)
+        },
+        Action::External((ExternalAction::StoreLog(log), _, _)) => {
             let conn = Log::connection()
                 .or(Err(Error::FailedDbConnection))?;
 
@@ -75,8 +100,9 @@ pub fn run(action: Action) -> Result<(), Error> {
 
             conn.close()
                 .or(Err(Error::FailedToCloseDbConnection))
+                .map(|_| state)
         },
-        Action::External((ExternalAction::StoreLogs(logs), _)) => {
+        Action::External((ExternalAction::StoreLogs(logs), _, _)) => {
             let conn = Log::connection()
                 .or(Err(Error::FailedDbConnection))?;
 
@@ -93,8 +119,9 @@ pub fn run(action: Action) -> Result<(), Error> {
 
             conn.close()
                 .or(Err(Error::FailedToCloseDbConnection))
+                .map(|_| state)
         },
-        Action::External((ExternalAction::ReadLogs(_max), sender)) => {
+        Action::External((ExternalAction::ReadLogs(_max), _, sender)) => {
             let conn = Log::connection()
                 .or(Err(Error::FailedDbConnection))?;
 
@@ -109,6 +136,7 @@ pub fn run(action: Action) -> Result<(), Error> {
 
             sender.send(response)
                 .or(Err(Error::FailedToSendResponse))
+                .map(|_| state)
         }
     }
 }

@@ -10,6 +10,7 @@ pub enum Error {
     FailedToReadTcpStream,
     FailedToCreateTcpStreamWriter,
     FailedToSendResponse,
+    ClientDisconnected,
     CorruptTcpStreamData,
     EmptyTcpStreamData,
     DeserializationFailed,

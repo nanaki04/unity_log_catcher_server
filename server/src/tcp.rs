@@ -1,14 +1,19 @@
 use std::thread;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::net::{TcpListener, TcpStream, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::net::{TcpListener, TcpStream, SocketAddr, Shutdown};
 use std::io::{Read, Write};
 use std::str::from_utf8;
-use crate::actions::{Action, InternalAction};
+use std::process::Command;
+use regex::Regex;
+use crate::actions::{Action, InternalAction, ExternalAction};
 use crate::error::Error;
+
+static ID_GEN: AtomicUsize = AtomicUsize::new(0);
 
 pub fn start_server() -> Result<Receiver<Action>, Error> {
     let (tx, rx) = channel();
-    let listener = TcpListener::bind("127.0.0.1:7033")
+    let listener = TcpListener::bind("0.0.0.0:7033")
         .or(Error::FailedToOpenTcpListener.as_result::<TcpListener>())?;
 
     thread::spawn(move || {
@@ -18,22 +23,41 @@ pub fn start_server() -> Result<Receiver<Action>, Error> {
         }
     });
 
+    let stdout = Command::new("hostname")
+        .args(&["-I"])
+        .output()
+        .map(|output| output.stdout)
+        .map(|stdout| String::from_utf8(stdout)
+             .unwrap_or_else(|_| "".to_string())
+        )
+        .unwrap_or_else(|_| "".to_string());
+
+    let ip_search = Regex::new(r"\s192.[^\s]+[\s|$]").unwrap();
+    let ip = ip_search.captures(&stdout)
+        .and_then(|caps| caps.get(0))
+        .map(|cap| cap.as_str().trim())
+        .unwrap_or_else(|| "0.0.0.0");
+
+    println!("Listening on {}:7033", ip);
+
     Ok(rx)
 }
 
 fn accept(listener : &TcpListener, tx: Sender<Action>) -> Result<(), Error> {
-    let (socket, address) = listener.accept()
+    let (socket, _address) = listener.accept()
         .or(Error::FailedToAcceptOnTcpListener.as_result::<(TcpStream, SocketAddr)>())?;
-
-    let action = Action::Internal(InternalAction::AddClient(address));
-    tx.send(action)
-        .or(Error::ActionDispatchFailed.as_result::<()>())?;
 
     receive(socket, tx.clone())
 }
 
 fn receive(mut socket : TcpStream, tx : Sender<Action>) -> Result<(), Error> {
     let (tcp_out_tx, tcp_out_tr) = channel();
+
+    let client_id = ID_GEN.fetch_add(1, Ordering::SeqCst);
+    let action = Action::Internal(InternalAction::AddClient((client_id, tcp_out_tx.clone())));
+    tx.send(action)
+        .or(Error::ActionDispatchFailed.as_result::<()>())?;
+
     let mut write_stream = socket.try_clone()
         .or(Error::FailedToCreateTcpStreamWriter.as_result::<TcpStream>())?;
 
@@ -43,7 +67,7 @@ fn receive(mut socket : TcpStream, tx : Sender<Action>) -> Result<(), Error> {
         loop {
             let mut buffer = [0; 128];
 
-            data = socket.read(&mut buffer[..])
+            let result = socket.read(&mut buffer[..])
                 .or(Error::FailedToReadTcpStream.as_result::<usize>())
                 .and_then(|size| {
                     if size > 0 {
@@ -53,35 +77,51 @@ fn receive(mut socket : TcpStream, tx : Sender<Action>) -> Result<(), Error> {
                         data.push_str(incoming_data);
                         take_messages(data)
                     } else {
-                        Ok((data, Vec::<String>::new()))
+                        let _ = tx.send(Action::External((ExternalAction::RemoveClient, client_id, tcp_out_tx.clone())));
+
+                        Error::ClientDisconnected.as_result::<(String, Vec<String>)>()
                     }
                 })
                 .and_then(|(rest, messages)| {
-                    let actions = parse_messages(messages, &tcp_out_tx)?;
+                    let actions = parse_messages(messages, client_id, &tcp_out_tx)?;
                     actions
                         .into_iter()
                         .fold(Ok(()), |acc, action| acc.and_then(|_| tx.send(action)))
                         .map(|_| rest)
                         .or(Error::ActionDispatchFailed.as_result::<String>())
-                })
-                .unwrap_or_else(|e| {
-                    println!("{}", e);
-                    String::new()
                 });
+
+            if result.is_err() {
+                break;
+            }
+
+            data = result.unwrap();
         }
     });
 
     thread::spawn(move || {
         loop {
-            tcp_out_tr.recv()
+            let result = tcp_out_tr.recv()
                 .or(Error::ReceiveActionResponseFailed.as_result())
+                .and_then(|output| {
+                    if output == "Close" {
+                        Error::ClientDisconnected.as_result()
+                    } else {
+                        Ok(output)
+                    }
+                })
                 .and_then(|output| write_stream.write(format!("{}\n", output.as_str()).as_bytes())
                     .or(Error::FailedToSendResponse.as_result())
-                    .map(|_| ())
-                )
-                .unwrap_or_else(|e| {
-                    println!("{}", e);
-                });
+                );
+
+            if result.is_err() {
+                let _ = write_stream.shutdown(Shutdown::Both);
+                break;
+            }
+
+            println!("{}", "\nSending data:");
+            println!("{}", result.unwrap());
+            println!("{}", "\n");
         }
     });
 
@@ -89,7 +129,6 @@ fn receive(mut socket : TcpStream, tx : Sender<Action>) -> Result<(), Error> {
 }
 
 fn take_messages(data : String) -> Result<(String, Vec<String>), Error> {
-    println!("{}", "take messages");
     let chunks : Vec<&str> = data.split("\n")
         .collect();
 
@@ -103,13 +142,14 @@ fn take_messages(data : String) -> Result<(String, Vec<String>), Error> {
         .ok_or(Error::EmptyTcpStreamData)
 }
 
-fn parse_messages(messages : Vec<String>, sender : &Sender<String>) -> Result<Vec<Action>, Error> {
-    println!("{}", "parse messages");
+fn parse_messages(messages : Vec<String>, client_id : usize, sender : &Sender<String>) -> Result<Vec<Action>, Error> {
+    println!("{}", "\nReceiving data:");
     messages
         .iter()
         .fold(Ok(Vec::<Action>::new()), |acc, message| {
+            println!("{}", message);
             acc.and_then(|mut actions| {
-                let action = Action::deserialize(message.as_str(), sender.clone())?;
+                let action = Action::deserialize(message.as_str(), client_id, sender.clone())?;
                 actions.push(action);
                 Ok(actions)
             })
